@@ -301,6 +301,139 @@ async def search_flights(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Cheapest-week search (Duffel — searches every Saturday in a given month)
+# ---------------------------------------------------------------------------
+
+
+@tool(
+    "find_cheapest_week",
+    (
+        "Find the cheapest 7-night round trip within a given month. "
+        "Searches every Saturday in the month as a potential departure date "
+        "and returns the 3 cheapest options with their exact dates and prices. "
+        "Use this instead of search_flights when the traveller has only specified "
+        "a travel month rather than exact dates. "
+        "travel_month must be YYYY-MM format (e.g. '2026-07'). "
+        "Requires the DUFFEL_API_KEY environment variable."
+    ),
+    {"origin": str, "destination": str, "travel_month": str, "passengers": int},
+)
+async def find_cheapest_week(args: dict) -> dict:
+    import calendar
+    from datetime import date, timedelta
+
+    origin_q: str = args["origin"]
+    dest_q: str = args["destination"]
+    travel_month: str = args["travel_month"]   # YYYY-MM
+    passengers: int = int(args.get("passengers") or 1)
+
+    if not os.environ.get("DUFFEL_API_KEY"):
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Flight search is not configured. "
+                        "Set DUFFEL_API_KEY in your environment."
+                    ),
+                }
+            ]
+        }
+
+    try:
+        year, month = map(int, travel_month.split("-"))
+    except ValueError:
+        return {
+            "content": [{"type": "text", "text": f"Invalid travel_month '{travel_month}'. Use YYYY-MM format."}]
+        }
+
+    _, days_in_month = calendar.monthrange(year, month)
+    saturdays = [
+        date(year, month, day)
+        for day in range(1, days_in_month + 1)
+        if date(year, month, day).weekday() == 5  # Saturday
+    ]
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        origin_iata, origin_name = await _resolve_iata(client, origin_q)
+        dest_iata, dest_name = await _resolve_iata(client, dest_q)
+
+        results = []
+        for dep_date in saturdays:
+            ret_date = dep_date + timedelta(days=7)
+            body = {
+                "data": {
+                    "slices": [
+                        {
+                            "origin": origin_iata,
+                            "destination": dest_iata,
+                            "departure_date": dep_date.isoformat(),
+                        },
+                        {
+                            "origin": dest_iata,
+                            "destination": origin_iata,
+                            "departure_date": ret_date.isoformat(),
+                        },
+                    ],
+                    "passengers": [{"type": "adult"} for _ in range(passengers)],
+                    "cabin_class": "economy",
+                }
+            }
+            try:
+                resp = await client.post(
+                    f"{_DUFFEL_BASE}/air/offer_requests",
+                    params={"return_offers": "true"},
+                    json=body,
+                    headers=_duffel_headers(),
+                )
+                resp.raise_for_status()
+                offers = resp.json().get("data", {}).get("offers", [])
+                if offers:
+                    cheapest = min(offers, key=lambda o: float(o["total_amount"]))
+                    results.append(
+                        {
+                            "departure": dep_date.isoformat(),
+                            "return": ret_date.isoformat(),
+                            "price": float(cheapest["total_amount"]),
+                            "currency": cheapest["total_currency"],
+                            "airline": cheapest["owner"]["name"],
+                        }
+                    )
+            except Exception:
+                continue  # skip dates with no results
+
+    if not results:
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"No flights found for {origin_name} ({origin_iata}) → "
+                        f"{dest_name} ({dest_iata}) in {travel_month}."
+                    ),
+                }
+            ]
+        }
+
+    results.sort(key=lambda r: r["price"])
+
+    lines = [
+        f"Cheapest week-long trips: {origin_name} ({origin_iata}) → {dest_name} ({dest_iata})",
+        f"  Month: {travel_month}  |  7 nights  |  {passengers} adult(s)\n",
+    ]
+    for i, r in enumerate(results[:3], 1):
+        lines.append(
+            f"Option {i}  —  {r['currency']} {r['price']:.2f}  ({r['airline']})"
+        )
+        lines.append(f"  Depart: {r['departure']}   Return: {r['return']}")
+        lines.append("")
+
+    lines.append(f"Cheapest option: depart {results[0]['departure']}, return {results[0]['return']}")
+
+    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+
+# ---------------------------------------------------------------------------
 # Task management tools (SQLite)
 # ---------------------------------------------------------------------------
 
@@ -440,6 +573,7 @@ travel_tools_server = create_sdk_mcp_server(
     tools=[
         get_weather,
         search_flights,
+        find_cheapest_week,
         create_trip_task,
         list_trip_tasks,
         complete_trip_task,
