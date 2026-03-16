@@ -258,17 +258,18 @@ async def main() -> None:
     agent = AutonomousTravelAgent()
 
     my_trip = TripPreferences(
-        origin_city="London",
+        origin_city="Bengaluru, India",
         destination="Kyrgyzstan",
-        departure_date="2025-07-10",
-        return_date="2025-07-17",
+        departure_date="2026-07-10",
+        return_date="2026-07-17",
         travelers=1,
-        budget_usd=3000,
+        budget_usd=1000,
         interests=[
-            "hiking and trekking",
+            "remote nature, greenery, mountains",
             "nomadic culture and yurt stays",
             "landscape photography",
             "off-the-beaten-path experiences",
+            "avoid crowded tourist sites",
         ],
         accommodation_pref="mix of guesthouses in Bishkek and yurt camps in the mountains",
         fitness_level="high",
@@ -283,9 +284,8 @@ async def main() -> None:
             "guided group tours with large crowds",
         ],
         extra_notes=(
-            "I have a valid UK passport. "
-            "I prefer early morning starts for hikes to catch good light for photography. "
-            "I'll carry my own camping gear if needed."
+            "I have a valid Indian passport. "
+            "I prefer early morning starts cto catch good light for photography. "
         ),
     )
 
