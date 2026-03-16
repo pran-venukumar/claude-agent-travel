@@ -99,7 +99,7 @@ async def main():
         "Can you check the current weather in Bishkek and suggest which regions to focus on?",
 
         # Turn 2: Flight search
-        "I'll be flying from London. Can you search for flights from London to Bishkek "
+        "I'll be flying from Bengaluru. Can you search for flights from Bengaluru to Bishkek "
         "departing 2025-07-10 and returning 2025-07-17, 1 adult?",
 
         # Turn 3: Create planning tasks
