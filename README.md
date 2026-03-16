@@ -5,7 +5,7 @@ A travel planning agent built with the [Claude Agent SDK](https://github.com/ant
 ## Features
 
 - **Weather** — live forecasts from [yr.no](https://yr.no) (MET Norway) for any destination, resolved via OpenStreetMap geocoding. No API key required.
-- **Flight search** — searches for flight offers via the [Amadeus for Developers](https://developers.amadeus.com) free sandbox. Accepts city names, airport names, or IATA codes.
+- **Flight search** — searches for flight offers via the [Duffel API](https://duffel.com/developers) (free test environment). Accepts city names, airport names, or IATA codes.
 - **Trip task manager** — create, list, complete, and delete planning tasks stored in a local SQLite database.
 
 ## Setup
@@ -14,11 +14,10 @@ A travel planning agent built with the [Claude Agent SDK](https://github.com/ant
 pip install claude-agent-sdk anyio httpx
 ```
 
-For flight search, register for free at [developers.amadeus.com](https://developers.amadeus.com/register) and export your sandbox credentials:
+For flight search, sign up at [duffel.com/developers](https://duffel.com/developers), create an access token, and export it:
 
 ```bash
-export AMADEUS_CLIENT_ID=your_client_id
-export AMADEUS_CLIENT_SECRET=your_client_secret
+export DUFFEL_API_KEY=your_access_token
 ```
 
 > **Note:** The Claude Agent SDK spawns a Claude Code subprocess internally. Always run from a regular terminal — not inside an active Claude Code session.
@@ -61,7 +60,7 @@ trip_tasks.db        — SQLite task database, created automatically on first ru
 | Tool | Description |
 |---|---|
 | `get_weather` | Current conditions and 12h forecast for any location |
-| `search_flights` | Flight offers between two cities (requires Amadeus credentials) |
+| `search_flights` | Flight offers between two cities (requires `DUFFEL_API_KEY`) |
 | `create_trip_task` | Add a planning task to the local database |
 | `list_trip_tasks` | List all tasks, optionally filtered by destination |
 | `complete_trip_task` | Mark a task as done by ID |

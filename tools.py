@@ -1,8 +1,8 @@
 """
 Travel agent tools:
   - get_weather:    fetches a forecast from yr.no (MET Norway) for any location name
-  - search_flights: searches flight offers via Amadeus for Developers (free sandbox)
-                    set AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET env vars
+  - search_flights: searches flight offers via Duffel API (free test environment)
+                    set DUFFEL_API_KEY env var (get one at duffel.com/developers)
   - create_trip_task / list_trip_tasks / complete_trip_task / delete_trip_task:
     SQLite-backed task manager for trip planning
 """
@@ -133,51 +133,45 @@ async def get_weather(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Flight search tool (Amadeus for Developers — free sandbox)
-# Register at https://developers.amadeus.com/register to get credentials.
-# Set AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET in your environment.
+# Flight search tool (Duffel API — free test environment)
+# Sign up at duffel.com/developers and create an access token.
+# Set DUFFEL_API_KEY in your environment.
 # ---------------------------------------------------------------------------
 
-_AMADEUS_BASE = "https://test.api.amadeus.com"
+_DUFFEL_BASE = "https://api.duffel.com"
 
 
-async def _amadeus_token(client: httpx.AsyncClient) -> str:
-    """Fetch a short-lived OAuth2 bearer token (client_credentials grant)."""
-    resp = await client.post(
-        f"{_AMADEUS_BASE}/v1/security/oauth2/token",
-        data={
-            "grant_type": "client_credentials",
-            "client_id": os.environ["AMADEUS_CLIENT_ID"],
-            "client_secret": os.environ["AMADEUS_CLIENT_SECRET"],
-        },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
+def _duffel_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {os.environ.get('DUFFEL_API_KEY', '')}",
+        "Duffel-Version": "v2",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Accept-Encoding": "gzip",
+    }
 
 
-async def _resolve_iata(client: httpx.AsyncClient, token: str, query: str) -> tuple[str, str]:
+async def _resolve_iata(client: httpx.AsyncClient, query: str) -> tuple[str, str]:
     """
     Resolve a city/airport name or bare IATA code to (iata_code, display_name).
-    If the query is already a 3-letter IATA code it is returned as-is.
+    Uses Duffel's places/suggestions endpoint; bare 3-letter codes are returned as-is.
     """
     query = query.strip()
     if len(query) == 3 and query.isalpha():
         return query.upper(), query.upper()
 
     resp = await client.get(
-        f"{_AMADEUS_BASE}/v1/reference-data/locations",
-        params={"keyword": query, "subType": "CITY,AIRPORT", "page[limit]": 1},
-        headers={"Authorization": f"Bearer {token}"},
+        f"{_DUFFEL_BASE}/places/suggestions",
+        params={"query": query},
+        headers=_duffel_headers(),
     )
     resp.raise_for_status()
-    data = resp.json().get("data", [])
-    if not data:
-        raise ValueError(f"Could not find an airport/city matching '{query}'")
-    loc = data[0]
-    iata = loc.get("iataCode") or loc["address"].get("cityCode", "???")
-    name = loc.get("name", query)
-    return iata, name
+    suggestions = resp.json().get("data", [])
+    for s in suggestions:
+        if s.get("iata_code"):
+            name = s.get("name") or s.get("city_name") or query
+            return s["iata_code"], name
+    raise ValueError(f"Could not find an airport/city matching '{query}'")
 
 
 @tool(
@@ -188,9 +182,8 @@ async def _resolve_iata(client: httpx.AsyncClient, token: str, query: str) -> tu
         "departure_date must be YYYY-MM-DD. "
         "Set return_date (YYYY-MM-DD) for a round trip, or leave it empty for one-way. "
         "passengers is the number of adults (default 1). "
-        "Returns the cheapest options with airline, stops, duration, and price. "
-        "NOTE: uses the Amadeus test sandbox — prices and availability are illustrative. "
-        "Requires AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET environment variables."
+        "Returns up to 5 options with airline, stops, duration, and price. "
+        "Requires the DUFFEL_API_KEY environment variable (duffel.com/developers)."
     ),
     {
         "origin": str,
@@ -207,43 +200,49 @@ async def search_flights(args: dict) -> dict:
     return_date: str = args.get("return_date", "").strip()
     passengers: int = int(args.get("passengers") or 1)
 
-    if not os.environ.get("AMADEUS_CLIENT_ID") or not os.environ.get("AMADEUS_CLIENT_SECRET"):
+    if not os.environ.get("DUFFEL_API_KEY"):
         return {
             "content": [
                 {
                     "type": "text",
                     "text": (
                         "Flight search is not configured.\n"
-                        "Register for free at https://developers.amadeus.com/register, "
-                        "then set AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET in your environment."
+                        "Sign up at duffel.com/developers, create an access token, "
+                        "then set DUFFEL_API_KEY in your environment."
                     ),
                 }
             ]
         }
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        token = await _amadeus_token(client)
-        origin_iata, origin_name = await _resolve_iata(client, token, origin_q)
-        dest_iata, dest_name = await _resolve_iata(client, token, dest_q)
+    async with httpx.AsyncClient(timeout=30) as client:
+        origin_iata, origin_name = await _resolve_iata(client, origin_q)
+        dest_iata, dest_name = await _resolve_iata(client, dest_q)
 
-        params: dict = {
-            "originLocationCode": origin_iata,
-            "destinationLocationCode": dest_iata,
-            "departureDate": departure_date,
-            "adults": passengers,
-            "max": 5,
-            "currencyCode": "USD",
-        }
+        # Build slices — two slices for round trip, one for one-way
+        slices = [
+            {"origin": origin_iata, "destination": dest_iata, "departure_date": departure_date}
+        ]
         if return_date:
-            params["returnDate"] = return_date
+            slices.append(
+                {"origin": dest_iata, "destination": origin_iata, "departure_date": return_date}
+            )
 
-        resp = await client.get(
-            f"{_AMADEUS_BASE}/v2/shopping/flight-offers",
-            params=params,
-            headers={"Authorization": f"Bearer {token}"},
+        body = {
+            "data": {
+                "slices": slices,
+                "passengers": [{"type": "adult"} for _ in range(passengers)],
+                "cabin_class": "economy",
+            }
+        }
+
+        resp = await client.post(
+            f"{_DUFFEL_BASE}/air/offer_requests",
+            params={"return_offers": "true"},
+            json=body,
+            headers=_duffel_headers(),
         )
         resp.raise_for_status()
-        offers = resp.json().get("data", [])
+        offers = resp.json().get("data", {}).get("offers", [])
 
     if not offers:
         return {
@@ -261,31 +260,40 @@ async def search_flights(args: dict) -> dict:
     trip_type = f"round-trip (return {return_date})" if return_date else "one-way"
     lines = [
         f"Flights from {origin_name} ({origin_iata}) → {dest_name} ({dest_iata})",
-        f"  Date: {departure_date}  |  {trip_type}  |  {passengers} adult(s)",
-        f"  (Amadeus test sandbox — illustrative data)\n",
+        f"  Date: {departure_date}  |  {trip_type}  |  {passengers} adult(s)\n",
     ]
 
-    for i, offer in enumerate(offers, 1):
-        price = offer["price"]["grandTotal"]
-        currency = offer["price"]["currency"]
-        itineraries = offer["itineraries"]
+    for i, offer in enumerate(offers[:5], 1):
+        price = offer["total_amount"]
+        currency = offer["total_currency"]
+        airline = offer["owner"]["name"]
 
-        lines.append(f"Option {i}  —  ${price} {currency}")
-        for leg_idx, itin in enumerate(itineraries):
-            label = "Outbound" if leg_idx == 0 else "Return "
-            duration = itin["duration"].replace("PT", "").lower()
-            segments = itin["segments"]
-            stops = len(segments) - 1
-            stop_label = "non-stop" if stops == 0 else f"{stops} stop(s)"
+        lines.append(f"Option {i}  —  {currency} {price}  ({airline})")
 
+        for leg_idx, slc in enumerate(offer["slices"]):
+            label = "Outbound" if leg_idx == 0 else "Return  "
+            segments = slc["segments"]
             first_seg = segments[0]
             last_seg = segments[-1]
-            dep = first_seg["departure"]["at"].replace("T", " ")
-            arr = last_seg["arrival"]["at"].replace("T", " ")
-            carrier = first_seg["carrierCode"]
+
+            dep = first_seg["departing_at"].replace("T", " ")
+            arr = last_seg["arriving_at"].replace("T", " ")
+            origin_code = first_seg["origin"]["iata_code"]
+            dest_code = last_seg["destination"]["iata_code"]
+
+            # Total stops = intermediate stops within all segments
+            total_stops = sum(len(seg.get("stops", [])) for seg in segments)
+            extra_segments = len(segments) - 1  # connections
+            total_stops += extra_segments
+            stop_label = "non-stop" if total_stops == 0 else f"{total_stops} stop(s)"
+
+            # Slice duration from first segment (slice-level duration not always present)
+            duration = slc.get("duration", first_seg.get("duration", ""))
+            duration = duration.replace("PT", "").lower() if duration else "?"
 
             lines.append(
-                f"  {label}: {dep} → {arr}  |  {duration}  |  {stop_label}  |  {carrier}"
+                f"  {label}: {origin_code} {dep} → {dest_code} {arr}"
+                f"  |  {duration}  |  {stop_label}"
             )
         lines.append("")
 
