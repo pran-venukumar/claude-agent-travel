@@ -113,7 +113,7 @@ class TripPreferences:
     return_date: str = ""        # YYYY-MM-DD
 
     travelers: int = 1
-    budget_usd: int = 2000
+    budget_usd: int = 1000
 
     # Preferences (edit these defaults to personalise the plan)
     interests: list[str] = field(default_factory=list)
